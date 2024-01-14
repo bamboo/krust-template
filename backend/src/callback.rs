@@ -3,7 +3,7 @@
 //! The Java object is expected to expose a `public void invoke(String)` method.
 use jni::errors::Error;
 use jni::objects::{GlobalRef, JMethodID, JObject, JValue};
-use jni::signature::{JavaType, Primitive};
+use jni::signature::{Primitive, ReturnType};
 use jni::{JNIEnv, JavaVM};
 use thiserror::*;
 use tokio::sync::mpsc;
@@ -27,7 +27,7 @@ pub fn forward_all(
     jvm: JavaVM,
     on_event: GlobalRef,
 ) -> Result<(), CallbackError> {
-    with_callback(&jvm, on_event, |on_event| {
+    with_callback(&jvm, on_event, |mut on_event| unsafe {
         loop {
             match events.blocking_recv() {
                 Some(e) => on_event.invoke(&serde_json::to_string(&e)?)?,
@@ -54,14 +54,14 @@ where
 
 pub struct StringCallback<'a> {
     env: JNIEnv<'a>,
-    object: JObject<'a>,
-    method: JMethodID<'a>,
+    object: &'a JObject<'a>,
+    method: JMethodID,
 }
 
 impl<'a> StringCallback<'a> {
     fn new(
-        env: JNIEnv<'a>,
-        object: JObject<'a>,
+        mut env: JNIEnv<'a>,
+        object: &'a JObject,
         method_name: &str,
     ) -> Result<StringCallback<'a>, Error> {
         let class = env.get_object_class(object)?;
@@ -73,13 +73,13 @@ impl<'a> StringCallback<'a> {
         })
     }
 
-    pub fn invoke(&self, string: &str) -> Result<(), Error> {
-        let env = self.env;
-        env.call_method_unchecked(
+    pub unsafe fn invoke(&mut self, string: &str) -> Result<(), Error> {
+        let java_string = self.env.new_string(string)?;
+        self.env.call_method_unchecked(
             self.object,
             self.method,
-            JavaType::Primitive(Primitive::Void),
-            &[JValue::from(JObject::from(env.new_string(string)?))],
+            ReturnType::Primitive(Primitive::Void),
+            &[JValue::Object(&java_string).as_jni()],
         )?;
         Ok(())
     }

@@ -8,9 +8,9 @@ extern crate jni;
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 
-use eyre::{bail, Context, eyre, Report};
-use jni::{JavaVM, JNIEnv};
+use eyre::{bail, eyre, Context, Report};
 use jni::objects::{GlobalRef, JClass, JObject, JString};
+use jni::{JNIEnv, JavaVM};
 use tokio::runtime;
 use tokio::sync::mpsc;
 
@@ -24,40 +24,40 @@ mod callback;
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "C" fn Java_io_github_bamboo_krust_Backend_start(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     /* Kotlin's (String) -> Unit */
     on_event: JObject,
     /* Kotlin's (String) -> Unit */
     on_error: JObject,
 ) {
-    if let Err(e) = start(env, on_event, on_error) {
-        throw_as_illegal_state_exception(&e, env).expect("start");
+    if let Err(e) = start(&env, on_event, on_error) {
+        throw_as_illegal_state_exception(&e, &mut env).expect("start");
     }
 }
 
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "C" fn Java_io_github_bamboo_krust_Backend_send(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     command: JString,
 ) {
-    if let Err(e) = send(env, command) {
-        throw_as_illegal_state_exception(&e, env).expect("send");
+    if let Err(e) = send(&mut env, &command) {
+        throw_as_illegal_state_exception(&e, &mut env).expect("send");
     }
 }
 
 #[no_mangle]
 #[allow(non_snake_case)]
-pub extern "C" fn Java_io_github_bamboo_krust_Backend_stop(env: JNIEnv, _class: JClass) {
+pub extern "C" fn Java_io_github_bamboo_krust_Backend_stop(mut env: JNIEnv, _class: JClass) {
     if let Err(e) = stop() {
-        throw_as_illegal_state_exception(&e, env).expect("stop");
+        throw_as_illegal_state_exception(&e, &mut env).expect("stop");
     }
     logging::stop();
 }
 
-fn start(env: JNIEnv, on_event: JObject, on_error: JObject) -> eyre::Result<()> {
+fn start(env: &JNIEnv, on_event: JObject, on_error: JObject) -> eyre::Result<()> {
     let mut agent_ref = lock_agent_ref()?;
     if agent_ref.is_some() {
         bail!("backend has already been started.");
@@ -66,7 +66,7 @@ fn start(env: JNIEnv, on_event: JObject, on_error: JObject) -> eyre::Result<()> 
     Ok(())
 }
 
-fn send(env: JNIEnv, command: JString) -> eyre::Result<()> {
+fn send(env: &mut JNIEnv, command: &JString) -> eyre::Result<()> {
     lock_agent_ref()?
         .as_ref()
         .ok_or_else(|| eyre!("backed must be started before send can be called"))?
@@ -88,7 +88,7 @@ lazy_static::lazy_static! {
     static ref AGENT_REF: Mutex<Option<AgentRef>> = Mutex::new(None);
 }
 
-fn spawn_agent(env: JNIEnv, on_event: JObject, on_error: JObject) -> eyre::Result<AgentRef> {
+fn spawn_agent(env: &JNIEnv, on_event: JObject, on_error: JObject) -> eyre::Result<AgentRef> {
     let (commands, agent_inbox) = tokio::sync::mpsc::unbounded_channel();
     let (agent_outbox, events) = mpsc::channel::<Event>(16);
     let (shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
@@ -126,7 +126,7 @@ fn with_error_reporting<F: FnOnce() -> eyre::Result<()>>(
     f: F,
 ) -> eyre::Result<()> {
     if let Err(e) = f() {
-        callback::with_callback(&jvm, on_error, |on_error| {
+        callback::with_callback(&jvm, on_error, |mut on_error| unsafe {
             on_error.invoke(&format_error(&e))?;
             Ok(())
         })?
@@ -140,7 +140,7 @@ fn build_agent_runtime() -> std::io::Result<runtime::Runtime> {
 
 fn throw_as_illegal_state_exception(
     e: &eyre::Report,
-    env: JNIEnv,
+    env: &mut JNIEnv,
 ) -> Result<(), jni::errors::Error> {
     throw_illegal_state_exception(env, &format_error(&e))
 }
@@ -149,8 +149,9 @@ fn format_error(e: &Report) -> String {
     format!("{:?}", e)
 }
 
-fn throw_illegal_state_exception(env: JNIEnv, error: &str) -> Result<(), jni::errors::Error> {
-    env.throw_new(env.find_class("java/lang/IllegalStateException")?, &error)
+fn throw_illegal_state_exception(env: &mut JNIEnv, error: &str) -> Result<(), jni::errors::Error> {
+    let class = env.find_class("java/lang/IllegalStateException")?;
+    env.throw_new(class, &error)
 }
 
 #[cfg(not(target_os = "android"))]
