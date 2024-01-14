@@ -15,6 +15,7 @@ val composeVersion: String by project
 android {
     namespace = "io.github.bamboo.krust"
     compileSdk = 34
+    ndkVersion = "25.1.8937393"
 
     defaultConfig {
         applicationId = "io.github.bamboo.krust"
